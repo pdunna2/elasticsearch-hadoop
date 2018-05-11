@@ -111,13 +111,17 @@ public final class HeaderProcessor {
             }
         }
 
-        this.headers = new ArrayList<Header>(workingHeaders.keySet().size());
+        this.headers = new ArrayList<Header>(workingHeaders.keySet().size()+2);
         for (Map.Entry<String, String> headerData : workingHeaders.entrySet()) {
             headers.add(new Header(headerData.getKey(), headerData.getValue()));
         }
         for (ReservedHeaders reservedHeaders : ReservedHeaders.values()) {
             headers.add(new Header(reservedHeaders.getName(), reservedHeaders.getDefaultValue()));
         }
+    }
+
+    public void AddHeader(String name, String val){
+        headers.add(new Header(name, val));
     }
 
     private void validateName(String headerName, Map.Entry<Object, Object> property) {

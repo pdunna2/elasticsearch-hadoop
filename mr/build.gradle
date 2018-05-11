@@ -42,3 +42,29 @@ eclipse.classpath.file {
         }
     }
 }
+
+
+repositories {
+    mavenCentral()
+}
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath "io.spring.gradle:dependency-management-plugin:1.0.3.RELEASE"
+    }
+}
+
+apply plugin: "io.spring.dependency-management"
+
+dependencyManagement {
+    imports {
+        mavenBom 'com.amazonaws:aws-java-sdk-bom:1.11.321'
+    }
+}
+
+dependencies {
+    compile 'com.amazonaws:aws-java-sdk-core:1.11.321'
+}

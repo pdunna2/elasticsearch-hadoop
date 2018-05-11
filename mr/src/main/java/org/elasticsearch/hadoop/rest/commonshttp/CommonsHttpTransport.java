@@ -18,7 +18,9 @@
  */
 package org.elasticsearch.hadoop.rest.commonshttp;
 
+
 import org.apache.commons.httpclient.*;
+import org.apache.commons.httpclient.HostConfiguration;
 import org.apache.commons.httpclient.HttpStatus;
 import org.apache.commons.httpclient.auth.AuthScope;
 import org.apache.commons.httpclient.methods.*;
@@ -41,12 +43,22 @@ import org.elasticsearch.hadoop.util.ReflectionUtils;
 import org.elasticsearch.hadoop.util.StringUtils;
 import org.elasticsearch.hadoop.util.encoding.HttpEncodingTools;
 
+
+import com.amazonaws.DefaultRequest;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import com.amazonaws.http.HttpMethodName;
+import com.amazonaws.auth.AWS4Signer;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.AWSCredentials;
+
+
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.net.Socket;
-import java.util.Locale;
+import java.util.*;
 
 /**
  * Transport implemented on top of Commons Http. Provides transport retries.
@@ -287,7 +299,7 @@ public class CommonsHttpTransport implements Transport, StatsAware {
                     // client is not yet initialized so simply save the object for later
                     results[1] = state;
                 }
-    
+
                 if (log.isDebugEnabled()) {
                     if (StringUtils.hasText(settings.getNetworkProxyHttpsUser())) {
                         log.debug(String.format("Using authenticated HTTPS proxy [%s:%s]", proxyHost, proxyPort));
@@ -307,7 +319,7 @@ public class CommonsHttpTransport implements Transport, StatsAware {
                     // client is not yet initialized so simply save the object for later
                     results[1] = state;
                 }
-    
+
                 if (log.isDebugEnabled()) {
                     if (StringUtils.hasText(settings.getNetworkProxyHttpUser())) {
                         log.debug(String.format("Using authenticated HTTP proxy [%s:%s]", proxyHost, proxyPort));
@@ -407,26 +419,32 @@ public class CommonsHttpTransport implements Transport, StatsAware {
     @Override
     public Response execute(Request request) throws IOException {
         HttpMethod http = null;
+        HttpMethodName awsHttpMethod = HttpMethodName.GET;
 
         switch (request.method()) {
-        case DELETE:
-            http = new DeleteMethodWithBody();
-            break;
-        case HEAD:
-            http = new HeadMethod();
-            break;
-        case GET:
-            http = (request.body() == null ? new GetMethod() : new GetMethodWithBody());
-            break;
-        case POST:
-            http = new PostMethod();
-            break;
-        case PUT:
-            http = new PutMethod();
-            break;
+            case DELETE:
+                http = new DeleteMethodWithBody();
+                awsHttpMethod = HttpMethodName.DELETE;
+                break;
+            case HEAD:
+                http = new HeadMethod();
+                awsHttpMethod = HttpMethodName.HEAD;
+                break;
+            case GET:
+                http = (request.body() == null ? new GetMethod() : new GetMethodWithBody());
+                awsHttpMethod = HttpMethodName.GET;
+                break;
+            case POST:
+                http = new PostMethod();
+                awsHttpMethod = HttpMethodName.POST;
+                break;
+            case PUT:
+                http = new PutMethod();
+                awsHttpMethod = HttpMethodName.PUT;
+                break;
 
-        default:
-            throw new EsHadoopTransportException("Unknown request method " + request.method());
+            default:
+                throw new EsHadoopTransportException("Unknown request method " + request.method());
         }
 
         CharSequence uri = request.uri();
@@ -455,9 +473,21 @@ public class CommonsHttpTransport implements Transport, StatsAware {
             throw new EsHadoopTransportException("Invalid target URI " + request, uriex);
         }
 
+        DefaultRequest<Void>  defaultRequest = new DefaultRequest<Void>("es");
+
         CharSequence params = request.params();
         if (StringUtils.hasText(params)) {
             http.setQueryString(params.toString());
+
+            Map<String, List<String>> paramsMap = new LinkedHashMap<String, List<String>>();
+            List<String> paramsList = StringUtils.tokenize(params.toString(), "&");
+
+            for (String paramSet : paramsList){
+                List<String> pair = StringUtils.tokenize(paramSet, "=");
+                List<String> vals = StringUtils.tokenize(pair.get(1));
+                paramsMap.put(pair.get(0), vals);
+            }
+            defaultRequest.setParameters(paramsMap);
         }
 
         ByteSequence ba = request.body();
@@ -468,9 +498,38 @@ public class CommonsHttpTransport implements Transport, StatsAware {
             EntityEnclosingMethod entityMethod = (EntityEnclosingMethod) http;
             entityMethod.setRequestEntity(new BytesArrayRequestEntity(ba));
             entityMethod.setContentChunked(false);
+
+            ByteArrayOutputStream ops = new ByteArrayOutputStream();
+            ba.writeTo(ops);
+            ByteArrayInputStream ips = new ByteArrayInputStream(ops.toByteArray());
+            defaultRequest.setContent(ips);
         }
 
+        defaultRequest.setHttpMethod(awsHttpMethod);
+        defaultRequest.setEndpoint(java.net.URI.create(httpInfo));
+        defaultRequest.setResourcePath(path);
+
+        //System.out.println("*************************** Host URL : " + httpInfo+uri.toString());
+
+        AWS4Signer signer = new AWS4Signer();
+        signer.setRegionName("us-west-2");
+        signer.setServiceName("es");
+        AWSCredentials creds = DefaultAWSCredentialsProviderChain.getInstance().getCredentials();
+        //System.out.println("*************************** Default request before signing : " +  defaultRequest.toString());
+
+        signer.sign(defaultRequest, creds);
+
+        //System.out.println("*************************** request  : " +  request.toString());
+        //System.out.println("*************************** Default request  : " +  defaultRequest.toString());
+        //System.out.println("*************************** Authorization header  : " +  defaultRequest.getHeaders().get("Authorization"));
+        //System.out.println("*************************** X-Amz-Date  : " +  defaultRequest.getHeaders().get("X-Amz-Date"));
+
+        headers.AddHeader("Authorization", defaultRequest.getHeaders().get("Authorization"));
+        headers.AddHeader("X-Amz-Date", defaultRequest.getHeaders().get("X-Amz-Date"));
+        headers.AddHeader("X-Amz-Security-Token", defaultRequest.getHeaders().get("X-Amz-Security-Token"));
+
         headers.applyTo(http);
+
 
         // when tracing, log everything
         if (log.isTraceEnabled()) {
